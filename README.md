@@ -6,6 +6,7 @@
 ## 2. PostgreSQL
 
 # to run locally just clone the repo and run 
+## use you own PostgreSQL credentials
 
    ```
      node index.js
