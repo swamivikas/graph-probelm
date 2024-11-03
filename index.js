@@ -9,7 +9,7 @@ const db = new pg.Client({
     user : "postgres",
     host  : "localhost",
     database : "graphs",
-    password : "............",
+    password : ".........",
     port : 5432,
   
   });
@@ -22,30 +22,49 @@ db.connect((err) => {
     }
 });
 
-app.post('/create-edge', async (req, res) => {
-    const { srcNode, dstNode, srcToDstDataKeys } = req.body;
+
+
+app.post('/create-graph', async (req, res) => {
+    const { graphId, graphName } = req.body;
 
     try {
-        // Check if both srcNode and dstNode exist
-        const srcNodeQuery = `SELECT * FROM nodes WHERE node_id = $1`;
-        const dstNodeQuery = `SELECT * FROM nodes WHERE node_id = $1`;
+        const insertGraphQuery = `INSERT INTO graphs (graph_id, graph_name) VALUES ($1, $2)`;
+        await db.query(insertGraphQuery, [graphId, graphName]);
+
+        res.status(201).send(`Graph ${graphName} created successfully with ID ${graphId}.`);
+    } catch (error) {
+        console.error('Error creating graph:', error);
+        res.status(500).send('An error occurred while creating the graph.');
+    }
+});
+
+
+
+
+app.post('/create-edge', async (req, res) => {
+    const { graphId, srcNode, dstNode, srcToDstDataKeys } = req.body;
+
+    try {
+        // Check if both srcNode and dstNode exist in the same graph
+        const srcNodeQuery = `SELECT * FROM nodes WHERE node_id = $1 AND graph_id = $2`;
+        const dstNodeQuery = `SELECT * FROM nodes WHERE node_id = $1 AND graph_id = $2`;
         
-        const srcNodeResult = await db.query(srcNodeQuery, [srcNode]);
-        const dstNodeResult = await db.query(dstNodeQuery, [dstNode]);
+        const srcNodeResult = await db.query(srcNodeQuery, [srcNode, graphId]);
+        const dstNodeResult = await db.query(dstNodeQuery, [dstNode, graphId]);
 
         if (srcNodeResult.rows.length === 0) {
-            return res.status(404).send(`Source node ${srcNode} not found.`);
+            return res.status(404).send(`Source node ${srcNode} not found in graph ${graphId}.`);
         }
 
         if (dstNodeResult.rows.length === 0) {
-            return res.status(404).send(`Destination node ${dstNode} not found.`);
+            return res.status(404).send(`Destination node ${dstNode} not found in graph ${graphId}.`);
         }
 
         // Insert the edge into the edges table
-        const insertEdgeQuery = `INSERT INTO edges (src_node, dst_node, src_to_dst_data_keys) VALUES ($1, $2, $3)`;
-        await db.query(insertEdgeQuery, [srcNode, dstNode, srcToDstDataKeys]);
+        const insertEdgeQuery = `INSERT INTO edges (graph_id, src_node, dst_node, src_to_dst_data_keys) VALUES ($1, $2, $3, $4)`;
+        await db.query(insertEdgeQuery, [graphId, srcNode, dstNode, srcToDstDataKeys]);
 
-        res.status(201).send(`Edge from ${srcNode} to ${dstNode} created successfully.`);
+        res.status(201).send(`Edge from ${srcNode} to ${dstNode} created successfully in graph ${graphId}.`);
     } catch (error) {
         console.error('Error creating edge:', error);
         res.status(500).send('An error occurred while creating the edge.');
@@ -53,19 +72,19 @@ app.post('/create-edge', async (req, res) => {
 });
 
 // Delete Node
-app.delete('/delete-node/:nodeId', async (req, res) => {
-    const nodeId = req.params.nodeId;
+app.delete('/delete-node/:graphId/:nodeId', async (req, res) => {
+    const { graphId, nodeId } = req.params;
 
     try {
-        // First, delete all edges connected to this node
-        const deleteEdgesQuery = `DELETE FROM edges WHERE src_node = $1 OR dst_node = $1`;
-        await db.query(deleteEdgesQuery, [nodeId]);
+        // First, delete all edges connected to this node within the specified graph
+        const deleteEdgesQuery = `DELETE FROM edges WHERE (src_node = $1 OR dst_node = $1) AND graph_id = $2`;
+        await db.query(deleteEdgesQuery, [nodeId, graphId]);
 
-        // Then, delete the node itself
-        const deleteNodeQuery = `DELETE FROM nodes WHERE node_id = $1`;
-        await db.query(deleteNodeQuery, [nodeId]);
+        // Then, delete the node itself from the specified graph
+        const deleteNodeQuery = `DELETE FROM nodes WHERE node_id = $1 AND graph_id = $2`;
+        await db.query(deleteNodeQuery, [nodeId, graphId]);
 
-        res.status(200).send(`Node ${nodeId} and its connected edges deleted successfully.`);
+        res.status(200).send(`Node ${nodeId} from graph ${graphId} and its connected edges deleted successfully.`);
     } catch (error) {
         console.error('Error deleting node:', error);
         res.status(500).send('An error occurred while deleting the node.');
@@ -74,19 +93,18 @@ app.delete('/delete-node/:nodeId', async (req, res) => {
 
 
 
-
 // Delete Edge
-app.delete('/delete-edge/:srcNode/:dstNode', async (req, res) => {
-    const { srcNode, dstNode } = req.params;
+app.delete('/delete-edge/:graphId/:srcNode/:dstNode', async (req, res) => {
+    const { graphId, srcNode, dstNode } = req.params;
 
     try {
-        const deleteEdgeQuery = `DELETE FROM edges WHERE src_node = $1 AND dst_node = $2`;
-        const result = await db.query(deleteEdgeQuery, [srcNode, dstNode]);
+        const deleteEdgeQuery = `DELETE FROM edges WHERE src_node = $1 AND dst_node = $2 AND graph_id = $3`;
+        const result = await db.query(deleteEdgeQuery, [srcNode, dstNode, graphId]);
 
         if (result.rowCount > 0) {
-            res.status(200).send(`Edge from ${srcNode} to ${dstNode} deleted successfully.`);
+            res.status(200).send(`Edge from ${srcNode} to ${dstNode} in graph ${graphId} deleted successfully.`);
         } else {
-            res.status(404).send(`Edge from ${srcNode} to ${dstNode} not found.`);
+            res.status(404).send(`Edge from ${srcNode} to ${dstNode} in graph ${graphId} not found.`);
         }
     } catch (error) {
         console.error('Error deleting edge:', error);
@@ -97,32 +115,34 @@ app.delete('/delete-edge/:srcNode/:dstNode', async (req, res) => {
 
 // Create Node
 app.post('/create-node', async (req, res) => {
-    const { nodeId, dataIn, dataOut } = req.body;
+    const { graphId, nodeId, dataIn, dataOut } = req.body;
 
     try {
-        const insertNodeQuery = `INSERT INTO nodes (node_id, data_in, data_out, paths_in, paths_out) VALUES ($1, $2, $3, '[]', '[]')`;
-        await db.query(insertNodeQuery, [nodeId, dataIn, dataOut]);
+        const insertNodeQuery = `INSERT INTO nodes (graph_id, node_id, data_in, data_out, paths_in, paths_out) VALUES ($1, $2, $3, $4, '[]', '[]')`;
+        await db.query(insertNodeQuery, [graphId, nodeId, dataIn, dataOut]);
 
-        res.status(201).send(`Node ${nodeId} created successfully.`);
+        res.status(201).send(`Node ${nodeId} in graph ${graphId} created successfully.`);
     } catch (error) {
         console.error('Error creating node:', error);
         res.status(500).send('An error occurred while creating the node.');
     }
 });
 
+
+
 // Edit Edge
-app.put('/edit-edge/:srcNode/:dstNode', async (req, res) => {
-    const { srcNode, dstNode } = req.params;
+app.put('/edit-edge/:graphId/:srcNode/:dstNode', async (req, res) => {
+    const { graphId, srcNode, dstNode } = req.params;
     const { srcToDstDataKeys } = req.body;
 
     try {
-        const updateEdgeQuery = `UPDATE edges SET src_to_dst_data_keys = $1 WHERE src_node = $2 AND dst_node = $3`;
-        const result = await db.query(updateEdgeQuery, [srcToDstDataKeys, srcNode, dstNode]);
+        const updateEdgeQuery = `UPDATE edges SET src_to_dst_data_keys = $1 WHERE src_node = $2 AND dst_node = $3 AND graph_id = $4`;
+        const result = await db.query(updateEdgeQuery, [srcToDstDataKeys, srcNode, dstNode, graphId]);
 
         if (result.rowCount > 0) {
-            res.status(200).send(`Edge from ${srcNode} to ${dstNode} updated successfully.`);
+            res.status(200).send(`Edge from ${srcNode} to ${dstNode} in graph ${graphId} updated successfully.`);
         } else {
-            res.status(404).send(`Edge from ${srcNode} to ${dstNode} not found.`);
+            res.status(404).send(`Edge from ${srcNode} to ${dstNode} in graph ${graphId} not found.`);
         }
     } catch (error) {
         console.error('Error editing edge:', error);
@@ -131,10 +151,12 @@ app.put('/edit-edge/:srcNode/:dstNode', async (req, res) => {
 });
 
 
-// Function to get all nodes from the database
-async function getAllNodes() {
+
+
+// Function to get all nodes from the database for a specific graph
+async function getAllNodes(graphId) {
     try {
-        const result = await db.query('SELECT * FROM nodes');
+        const result = await db.query('SELECT * FROM nodes WHERE graph_id = $1', [graphId]);
         return result.rows;
     } catch (error) {
         console.error('Error fetching nodes:', error);
@@ -142,10 +164,10 @@ async function getAllNodes() {
     }
 }
 
-// Function to get data for all nodes
-async function getAllNodesData() {
+// Function to get data for all nodes in a specific graph
+async function getAllNodesData(graphId) {
     try {
-        let allNodes = await getAllNodes();  // Fetch all nodes
+        let allNodes = await getAllNodes(graphId);  // Fetch all nodes for the specified graph
         let nodeData = allNodes.map(node => {
             return {
                 node_id: node.node_id,
@@ -160,12 +182,12 @@ async function getAllNodesData() {
     }
 }
 
-// Function to get a single node from the database
-async function getNode(nodeId) {
+// Function to get a single node from the database for a specific graph
+async function getNode(graphId, nodeId) {
     try {
-        const result = await db.query('SELECT * FROM nodes WHERE node_id = $1', [nodeId]);
+        const result = await db.query('SELECT * FROM nodes WHERE graph_id = $1 AND node_id = $2', [graphId, nodeId]);
         if (result.rows.length === 0) {
-            throw new Error(`Node with ID ${nodeId} not found`);
+            throw new Error(`Node with ID ${nodeId} not found in graph ${graphId}`);
         }
         return result.rows[0];
     } catch (error) {
@@ -174,10 +196,10 @@ async function getNode(nodeId) {
     }
 }
 
-// Function to get all edges for a specific node
-async function getEdgesForNode(nodeId) {
+// Function to get all edges for a specific node in a specific graph
+async function getEdgesForNode(graphId, nodeId) {
     try {
-        const result = await db.query('SELECT * FROM edges WHERE src_node = $1', [nodeId]);
+        const result = await db.query('SELECT * FROM edges WHERE graph_id = $1 AND src_node = $2', [graphId, nodeId]);
         return result.rows;
     } catch (error) {
         console.error('Error fetching edges for node:', error);
@@ -185,20 +207,20 @@ async function getEdgesForNode(nodeId) {
     }
 }
 
-// Function to update the 'data_in' of a node in the database
-async function updateNodeDataIn(nodeId, dataInValue) {
+// Function to update the 'data_in' of a node in the database for a specific graph
+async function updateNodeDataIn(graphId, nodeId, dataInValue) {
     try {
-        const query = 'UPDATE nodes SET data_in = $1 WHERE node_id = $2';
-        const values = [dataInValue, nodeId];
+        const query = 'UPDATE nodes SET data_in = $1 WHERE graph_id = $2 AND node_id = $3';
+        const values = [dataInValue, graphId, nodeId];
         await db.query(query, values);
-        console.log(`Successfully updated data_in for node: ${nodeId}`);
+        console.log(`Successfully updated data_in for node: ${nodeId} in graph ${graphId}`);
     } catch (error) {
-        console.error(`Error updating data_in for node ${nodeId}:`, error);
+        console.error(`Error updating data_in for node ${nodeId} in graph ${graphId}:`, error);
         throw new Error('Failed to update data_in');
     }
 }
 
-async function runConfig(src_node, dst_node) {
+async function runConfig(graphId, src_node, dst_node, root_inputs = {}, data_overwrites = {}, enable_list = [], disable_list = []) {
     try {
         let queue = [src_node];
         let visited = new Set();
@@ -207,23 +229,68 @@ async function runConfig(src_node, dst_node) {
         let dataFlowComplete = false;
         let overwriteTracker = {};
 
+        // Ensure root_inputs is a valid object before iterating
+        if (root_inputs && typeof root_inputs === 'object' && Object.keys(root_inputs).length > 0) {
+            // Handle root inputs
+            for (let [nodeId, dataIn] of Object.entries(root_inputs)) {
+                await updateNodeDataIn(graphId, nodeId, dataIn);  // Set the provided root node data_in
+            }
+        } else {
+            console.warn("Warning: No root inputs provided or root_inputs is not an object.");
+        }
+
+        // Ensure data_overwrites is a valid object before applying overwrites
+        if (data_overwrites && typeof data_overwrites === 'object' && Object.keys(data_overwrites).length > 0) {
+            // Apply data overwrites before the run starts
+            for (let [nodeId, overwrites] of Object.entries(data_overwrites)) {
+                let node = await getNode(graphId, nodeId);
+                for (let [key, value] of Object.entries(overwrites)) {
+                    node.data_in[key] = value;
+                }
+                node.data_out = { ...node.data_in };  // Set data_out based on overwritten data_in
+                console.log(`Applied overwrites for Node ${nodeId}:`, node.data_in);
+                await updateNodeDataIn(graphId, nodeId, node.data_in);  // Save overwritten data to database
+            }
+        } else {
+            console.warn("Warning: No data overwrites provided or data_overwrites is not an object.");
+        }
+
+        // Handle enabled and disabled lists
+        let activeNodes = new Set();
+        if (enable_list.length > 0) {
+            activeNodes = new Set(enable_list);  // Only consider nodes in the enable list
+        } else if (disable_list.length > 0) {
+            // Exclude nodes from disable list
+            let allNodes = await getAllNodes(graphId);
+            for (let node of allNodes) {
+                if (!disable_list.includes(node.node_id)) {
+                    activeNodes.add(node.node_id);
+                }
+            }
+        }
+
         while (queue.length > 0) {
             let currentNodeId = queue.shift();
+
+            // Skip if node is not enabled
+            if (activeNodes.size > 0 && !activeNodes.has(currentNodeId)) {
+                continue;
+            }
 
             if (visited.has(currentNodeId)) {
                 continue;
             }
             visited.add(currentNodeId);
 
-            let currentNode = await getNode(currentNodeId);
+            let currentNode = await getNode(graphId, currentNodeId);
             console.log(`Processing Node: ${currentNodeId}, Data In:`, currentNode.data_in, `Data Out:`, currentNode.data_out);
 
-            let outgoingEdges = await getEdgesForNode(currentNodeId);
+            let outgoingEdges = await getEdgesForNode(graphId, currentNodeId);
             let currentLevel = nodeLevels[currentNodeId];
 
             for (let edge of outgoingEdges) {
                 let dstNodeId = edge.dst_node;
-                let dstNode = await getNode(dstNodeId);
+                let dstNode = await getNode(graphId, dstNodeId);
 
                 if (!overwriteTracker[dstNodeId]) {
                     overwriteTracker[dstNodeId] = {};
@@ -264,7 +331,7 @@ async function runConfig(src_node, dst_node) {
                     break;
                 }
 
-                if (!visited.has(dstNodeId)) {
+                if (!visited.has(dstNodeId) && (!activeNodes.size || activeNodes.has(dstNodeId))) {
                     queue.push(dstNodeId);
                     nodeLevels[dstNodeId] = currentLevel + 1;
                 }
@@ -276,7 +343,7 @@ async function runConfig(src_node, dst_node) {
         }
 
         // Return in-memory node data for debugging purposes
-        return await getAllNodesData();
+        return await getAllNodesData(graphId);
     } catch (error) {
         console.error("An error occurred while processing the graph:", error);
         return { error: "An error occurred while processing the graph." };
@@ -285,13 +352,13 @@ async function runConfig(src_node, dst_node) {
 
 
 
-
 // Topological Sort
-app.get('/toposort', async (req, res) => {
+app.get('/toposort/:graphId', async (req, res) => {
+    const { graphId } = req.params;
     try {
-        // Get all nodes and edges
-        const nodesResult = await db.query('SELECT * FROM nodes');
-        const edgesResult = await db.query('SELECT * FROM edges');
+        // Get all nodes and edges for the specified graph
+        const nodesResult = await db.query('SELECT * FROM nodes WHERE graph_id = $1', [graphId]);
+        const edgesResult = await db.query('SELECT * FROM edges WHERE graph_id = $1', [graphId]);
 
         const nodes = nodesResult.rows;
         const edges = edgesResult.rows;
@@ -345,11 +412,12 @@ app.get('/toposort', async (req, res) => {
 });
 
 // Islands (Connected Components)
-app.get('/islands', async (req, res) => {
+app.get('/islands/:graphId', async (req, res) => {
+    const { graphId } = req.params;
     try {
-        // Get all nodes and edges
-        const nodesResult = await db.query('SELECT * FROM nodes');
-        const edgesResult = await db.query('SELECT * FROM edges');
+        // Get all nodes and edges for the specified graph
+        const nodesResult = await db.query('SELECT * FROM nodes WHERE graph_id = $1', [graphId]);
+        const edgesResult = await db.query('SELECT * FROM edges WHERE graph_id = $1', [graphId]);
 
         const nodes = nodesResult.rows;
         const edges = edgesResult.rows;
@@ -398,9 +466,9 @@ app.get('/islands', async (req, res) => {
     }
 });
 
-
 // API endpoint to process graph flow
-app.post('/run_config', async (req, res) => {
+app.post('/run_config/:graphId', async (req, res) => {
+    const { graphId } = req.params;
     const { src_node, dst_node } = req.body;
     console.log(req.body);
     if (!src_node || !dst_node) {
@@ -409,16 +477,13 @@ app.post('/run_config', async (req, res) => {
 
     try {
         // Run the graph traversal and data propagation
-        const finalNodeStates = await runConfig(src_node, dst_node);
+        const finalNodeStates = await runConfig(src_node, dst_node, graphId);
         return res.status(200).json(finalNodeStates);
     } catch (error) {
         console.error('Error in run_config:', error);
         return res.status(500).json({ error: 'An error occurred while processing the graph.' });
     }
 });
-
-
-
 
 
 
